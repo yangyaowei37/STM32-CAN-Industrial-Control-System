@@ -18,11 +18,16 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
+#include "can.h"
+#include "tim.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include "can.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,18 +48,32 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+uint8_t RxBuff[1];            
+volatile uint8_t rx_flag = 0; 
+CAN_RxHeaderTypeDef RxHeader;
+uint8_t RxData[8];
+volatile uint8_t can_rx_flag = 0; // <--- 新增：CAN接收标志位
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
+void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#include <stdio.h>   // printf 需要这个头文件
 
+/* 重定向 fputc：让 printf 的输出走串口1 */
+/* 原理：printf 底层调用 fputc 一个字符一个字符地发，我们把每个字符用 HAL 串口发出去 */
+int fputc(int ch, FILE *f)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, 0xFFFF); // 把1个字符通过串口1发出去
+    return ch;                                             // 返回这个字符
+}
 /* USER CODE END 0 */
 
 /**
@@ -86,9 +105,38 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USART1_UART_Init();
+  MX_TIM2_Init();
+  MX_CAN_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_UART_Receive_IT(&huart1, RxBuff, 1); // 开启串口接收中断
+	CAN_FilterTypeDef sFilterConfig;
+  sFilterConfig.FilterBank = 0; // 过滤器组0
+  sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK; // 掩码模式
+	
+  sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT; // 32位宽
+  sFilterConfig.FilterIdHigh = 0x0000; // 接收所有 ID
+  sFilterConfig.FilterIdLow = 0x0000;
+  sFilterConfig.FilterMaskIdHigh = 0x0000; // 掩码全0，表示不关心ID，全收
+  sFilterConfig.FilterMaskIdLow = 0x0000;
+  sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0; // 接收到 FIFO0
+  sFilterConfig.FilterActivation = ENABLE; // 开启过滤器
+  sFilterConfig.SlaveStartFilterBank = 14; // F103 的从过滤器组起始（无脑填14即可）
+  HAL_CAN_ConfigFilter(&hcan, &sFilterConfig); // 应用过滤器
+	HAL_CAN_Start(&hcan); // 启动 CAN
+  // 开启 CAN 的 FIFO0 接收挂起中断（极其重要！）
+  HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING); 
+  printf("F103 CAN Receiver Ready!\r\n");
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
+  MX_FREERTOS_Init();
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -97,17 +145,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-		/* ѭ��ִ�У�LED �� 500ms���� 500ms��������˸ */
-  /* HAL_GPIO_WritePin �Ĳ�����GPIO�˿�, ����, ��ƽ */
-  /* GPIO_PIN_SET   = �ߵ�ƽ(3.3V) = ����LED(�����ӷ�) */
-  /* GPIO_PIN_RESET = �͵�ƽ(0V)   = Ϩ��LED */
-
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);   // PC13����ߵ�ƽ������LED
-  HAL_Delay(500);                                         // ��ʱ500���루����ʽ���׶�3���滻����
-
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET); // PC13����͵�ƽ��Ϩ��LED
-  HAL_Delay(500);                                         // ����ʱ500����
-  }
+		 /* 主循环现在只负责处理数据，不再死等（灯由中断在后台闪） */
+    
+	}
   /* USER CODE END 3 */
 }
 
@@ -151,8 +191,54 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+// 串口接收完成中断回调函数
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if(huart->Instance == USART1)
+    {
+        rx_flag = 1;                              
+        HAL_UART_Receive_IT(&huart1, RxBuff, 1);  
+    }
+}
 
+// CAN 接收中断回调函数
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+    if(hcan->Instance == CAN1)
+    {
+        // 从 FIFO0 读取数据
+        if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
+        {
+            if (RxHeader.StdId == 0x123)
+            {
+                can_rx_flag = 1; // ⚠️ 中断里绝对不打印！只负责把标志位置1
+            }
+        }
+    }
+}
 /* USER CODE END 4 */
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM1 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM1)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
