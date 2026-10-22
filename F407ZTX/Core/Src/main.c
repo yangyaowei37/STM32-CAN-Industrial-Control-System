@@ -101,25 +101,31 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    // 1. 翻转 LED
-    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); 
+     HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); // 正常翻转一次
 
-    // 2. 配置帧头
-    TxHeader.StdId = 0x123;         // 帧 ID
+    TxHeader.StdId = 0x123;
     TxHeader.ExtId = 0;
-    TxHeader.IDE = CAN_ID_STD;      // 标准帧
-    TxHeader.RTR = CAN_RTR_DATA;    // 数据帧
-    TxHeader.DLC = 8;               // 数据长度8字节
+    TxHeader.IDE = CAN_ID_STD;
+    TxHeader.RTR = CAN_RTR_DATA;
+    TxHeader.DLC = 8;
     TxHeader.TransmitGlobalTime = DISABLE;
 
-    // 3. 发送数据（带防卡死保护！）
-    // 只有当发送邮箱有空闲时，才去发送。防止没接接收方导致死机。
+    // 记录发送状态
+    HAL_StatusTypeDef status = HAL_ERROR;
     if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) > 0) 
     {
-        HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
+        status = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
     }
 
-    HAL_Delay(500); // 每 500ms 发一帧（灯也会跟着闪）
+    // ⚠️ 灵魂测试：如果发送成功（说明总线通了，有人应答），连闪三次！
+    if (status == HAL_OK) {
+        for(int i=0; i<6; i++) {
+            HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+            HAL_Delay(100);
+        }
+    }
+
+    HAL_Delay(500); 
   }
   /* USER CODE END 3 */
 }
@@ -141,12 +147,11 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
   RCC_OscInitStruct.PLL.PLLN = 168;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;
