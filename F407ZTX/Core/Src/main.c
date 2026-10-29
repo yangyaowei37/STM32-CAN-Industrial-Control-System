@@ -204,11 +204,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
     {
-        if (RxHeader.StdId == 0x201) 
-        {
-            // 删掉 printf，只点灯！证明 F407 收到了 F103 的数据！
-            HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); 
-        }
+        // ⚠️ 中断里绝对不要用 printf！只翻转灯或置标志位即可
+        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); 
     }
 }
 /* USER CODE END 4 */
