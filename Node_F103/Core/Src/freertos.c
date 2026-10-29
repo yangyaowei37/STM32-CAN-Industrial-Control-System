@@ -27,6 +27,8 @@
 /* USER CODE BEGIN Includes */
 #include "usart.h"
 #include <stdio.h>
+#include "tim.h"
+#include "can.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,6 +43,7 @@ extern uint8_t RxBuff[1];
 extern volatile uint8_t can_rx_flag; 
 extern CAN_RxHeaderTypeDef RxHeader; 
 extern uint8_t RxData[8];
+extern volatile int32_t target_speed;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -131,23 +134,70 @@ void StartTaskUART(void *argument)
 {
   /* USER CODE BEGIN StartTaskUART */
   /* Infinite loop */
+  
+  // 声明 F407 接收反馈的 CAN 帧头
+  CAN_TxHeaderTypeDef TxHeader;
+  uint32_t TxMailbox;
+  uint8_t TxData[2]; 
+  
+  TxHeader.StdId = 0x201;  // 0x201 是回传数据
+  TxHeader.ExtId = 0;
+  TxHeader.IDE = CAN_ID_STD;
+  TxHeader.RTR = CAN_RTR_DATA;
+  TxHeader.DLC = 2;
+  TxHeader.TransmitGlobalTime = DISABLE;
+
+  // --- PID 参数变量 ---
+  int32_t last_encoder = 0;
+  float err = 0, last_err = 0, prev_err = 0;
+  float pwm_output = 0;
+  
+  // ⚠️ PID 三个参数 (Kp, Ki, Kd)，你需要根据实际情况微调
+  float Kp = 0.8; 
+  float Ki = 0.2; 
+  float Kd = 0.5;
+
   for(;;)
   {
-    if (rx_flag == 1)
+    // 1. 读取当前编码器数值 (强转成 16 位有符号整数)
+    int16_t current_encoder = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
+    
+    // 2. 计算实际速度 (强转成 int16_t 相减，自动处理 65535->0 的溢出)
+    int16_t actual_speed = current_encoder - (int16_t)last_encoder;
+		if (actual_speed > 5000) actual_speed = 5000;
+    if (actual_speed < -5000) actual_speed = -5000;
+    last_encoder = current_encoder;
+
+    // 3. 计算误差
+    err = target_speed - actual_speed;
+    
+    // 4. 增量式 PID 计算
+    float pwm_increment = (Kp * (err - last_err)) + (Ki * err) + (Kd * (err - 2*last_err + prev_err));
+    pwm_output += pwm_increment;
+    prev_err = last_err;
+    last_err = err;
+    
+    // 5. 限幅输出 (保证 PWM 在 0-999 之间)
+    if(pwm_output > 999) pwm_output = 999;
+    if(pwm_output < 0) pwm_output = 0;
+    
+    // 6. 把 PID 算出来的值送给电机
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, (uint32_t)pwm_output);
+    
+    // 7. 通过 CAN 把实际速度发给 F407
+    TxData[0] = (actual_speed >> 8) & 0xFF; // 高 8 位
+    TxData[1] = actual_speed & 0xFF;        // 低 8 位
+    if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0) 
     {
-      rx_flag = 0;    // 先清零标志位
-      HAL_UART_Transmit(&huart1, RxBuff, 1, 100);   // 回显收到的字节
-      printf("Recv: %c\r\n", RxBuff[0]);           // 打印提示
+        HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox);
     }
-		if (can_rx_flag == 1)
-    {
-      can_rx_flag = 0; // 清零标志位
-      printf("Recv CAN ID: 0x%X, Data: %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
-             RxHeader.StdId, RxData[0], RxData[1], RxData[2], RxData[3],
-             RxData[4], RxData[5], RxData[6], RxData[7]);
-    }
-    osDelay(10);   // 短暂延时，主动让出CPU给其他任务（别写死循环空转）
+    
+    // 8. 打印到串口方便调试
+    printf("Target: %d, Actual: %d, PWM: %.1f\r\n", target_speed, actual_speed, pwm_output);
+    
+    osDelay(50); // ⚠️ 周期变成 50ms，PID 响应更快
   }
+  
   /* USER CODE END StartTaskUART */
 }
 
@@ -165,7 +215,7 @@ void StartTaskLED(void *argument)
   for(;;)
   {
     HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);  // 翻转LED
-    osDelay(500);                            // FreeRTOS延时500ms（用osDelay，不用HAL_Delay！）
+    osDelay(2000);                            // FreeRTOS延时500ms（用osDelay，不用HAL_Delay！）
   }
   /* USER CODE END StartTaskLED */
 }

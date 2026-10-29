@@ -42,3 +42,5 @@ node_f103\freertos.o: ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/c
 node_f103\freertos.o: ../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.h
 node_f103\freertos.o: ../Core/Inc/usart.h
 node_f103\freertos.o: D:\keil\ARM\ARMCC\Bin\..\include\stdio.h
+node_f103\freertos.o: ../Core/Inc/tim.h
+node_f103\freertos.o: ../Core/Inc/can.h

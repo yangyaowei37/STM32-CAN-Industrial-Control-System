@@ -45,8 +45,12 @@
 
 /* USER CODE BEGIN PV */
 CAN_TxHeaderTypeDef TxHeader;
-uint8_t TxData[8] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}; // 要发送的数据
-uint32_t TxMailbox; // 发送邮箱
+uint8_t TxData[8] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}; 
+uint32_t TxMailbox; 
+
+// ⚠️ 新增：接收变量
+CAN_RxHeaderTypeDef RxHeader;
+uint8_t RxData[8];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,7 +95,22 @@ int main(void)
   MX_GPIO_Init();
   MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
-   HAL_CAN_Start(&hcan1); // 启动 CAN1
+    CAN_FilterTypeDef sFilterConfig;
+  sFilterConfig.FilterBank = 0; 
+  sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK; 
+  sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT; 
+  sFilterConfig.FilterIdHigh = 0x0000; 
+  sFilterConfig.FilterIdLow = 0x0000;
+  sFilterConfig.FilterMaskIdHigh = 0x0000; 
+  sFilterConfig.FilterMaskIdLow = 0x0000;
+  sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0; 
+  sFilterConfig.FilterActivation = ENABLE; 
+  sFilterConfig.SlaveStartFilterBank = 14; 
+  HAL_CAN_ConfigFilter(&hcan1, &sFilterConfig); 
+
+  // 2. 启动 CAN 并开启接收中断
+  HAL_CAN_Start(&hcan1); 
+  HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING); 
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -101,7 +120,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-     HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); // 正常翻转一次
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); // 正常翻转一次
+
+    // ⚠️ 重点修改：给 TxData[0] 赋值为 50，代表 50% 的速度
+    TxData[0] = 50; 
 
     TxHeader.StdId = 0x123;
     TxHeader.ExtId = 0;
@@ -117,7 +139,7 @@ int main(void)
         status = HAL_CAN_AddTxMessage(&hcan1, &TxHeader, TxData, &TxMailbox);
     }
 
-    // ⚠️ 灵魂测试：如果发送成功（说明总线通了，有人应答），连闪三次！
+    // 灵魂测试：如果发送成功（F103收到并回了ACK），连闪三次！
     if (status == HAL_OK) {
         for(int i=0; i<6; i++) {
             HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
@@ -125,7 +147,7 @@ int main(void)
         }
     }
 
-    HAL_Delay(500); 
+    HAL_Delay(1000); // 改为1秒发一次，方便观察
   }
   /* USER CODE END 3 */
 }
@@ -176,7 +198,19 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+// CAN 接收中断回调函数
+// F407 接收中断回调函数
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
+    {
+        if (RxHeader.StdId == 0x201) 
+        {
+            // 删掉 printf，只点灯！证明 F407 收到了 F103 的数据！
+            HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); 
+        }
+    }
+}
 /* USER CODE END 4 */
 
 /**

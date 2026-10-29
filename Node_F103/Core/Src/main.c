@@ -53,7 +53,7 @@ volatile uint8_t rx_flag = 0;
 CAN_RxHeaderTypeDef RxHeader;
 uint8_t RxData[8];
 volatile uint8_t can_rx_flag = 0; // <--- 新增：CAN接收标志位
-
+volatile int32_t target_speed = 0; // 全局目标速度
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -108,25 +108,27 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM2_Init();
   MX_CAN_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_IT(&huart1, RxBuff, 1); // 开启串口接收中断
-	CAN_FilterTypeDef sFilterConfig;
-  sFilterConfig.FilterBank = 0; // 过滤器组0
-  sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK; // 掩码模式
-	
-  sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT; // 32位宽
-  sFilterConfig.FilterIdHigh = 0x0000; // 接收所有 ID
+   // CAN 过滤器
+  CAN_FilterTypeDef sFilterConfig;
+  sFilterConfig.FilterBank = 0; 
+  sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK; 
+  sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT; 
+  sFilterConfig.FilterIdHigh = 0x0000; 
   sFilterConfig.FilterIdLow = 0x0000;
-  sFilterConfig.FilterMaskIdHigh = 0x0000; // 掩码全0，表示不关心ID，全收
+  sFilterConfig.FilterMaskIdHigh = 0x0000; 
   sFilterConfig.FilterMaskIdLow = 0x0000;
-  sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0; // 接收到 FIFO0
-  sFilterConfig.FilterActivation = ENABLE; // 开启过滤器
-  sFilterConfig.SlaveStartFilterBank = 14; // F103 的从过滤器组起始（无脑填14即可）
-  HAL_CAN_ConfigFilter(&hcan, &sFilterConfig); // 应用过滤器
-	HAL_CAN_Start(&hcan); // 启动 CAN
-  // 开启 CAN 的 FIFO0 接收挂起中断（极其重要！）
-  HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING); 
-  printf("F103 CAN Receiver Ready!\r\n");
+  sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0; 
+  sFilterConfig.FilterActivation = ENABLE; 
+  sFilterConfig.SlaveStartFilterBank = 14; 
+  HAL_CAN_ConfigFilter(&hcan, &sFilterConfig); 
+  
+  HAL_CAN_Start(&hcan); 
+  HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
+	 HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);       
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); 
+  
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -145,9 +147,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-		 /* 主循环现在只负责处理数据，不再死等（灯由中断在后台闪） */
-    
-	}
+		       /* Infinite loop */
+     
+  }
   /* USER CODE END 3 */
 }
 
@@ -204,41 +206,24 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 // CAN 接收中断回调函数
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-    if(hcan->Instance == CAN1)
+    // 进中断翻转灯
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET); // 如果你要翻转，用Toggle
+    
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
     {
-        // 从 FIFO0 读取数据
-        if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
+        if (RxHeader.StdId == 0x123)
         {
-            if (RxHeader.StdId == 0x123)
-            {
-                can_rx_flag = 1; // ⚠️ 中断里绝对不打印！只负责把标志位置1
-            }
+            // ⚠️ 核心修改：把 F407 发来的 50 映射为目标转速（比如 50 * 5 = 250）
+            // 这里的映射系数可以根据你电机的实际转速范围调整
+           target_speed = RxData[0] * 5;  
+            
+            // 方向控制依然保留
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
         }
     }
 }
 /* USER CODE END 4 */
-
-/**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM1 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM1)
-  {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
-}
 
 /**
   * @brief  This function is executed in case of error occurrence.
